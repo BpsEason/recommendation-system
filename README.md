@@ -10,14 +10,16 @@
 
 ```mermaid
 graph TD
-    A[用戶請求] -->|HTTP| B[Laravel App: API & Middleware]
-    B -->|A/B 測試分配| C[FastAPI: 推薦服務]
-    B -->|資料儲存| D[MySQL: 商品與用戶行為]
-    C -->|模型訓練/查詢| D
-    C -->|快取| E[Redis: 模型與行為快取]
-    F[Prometheus: 監控指標] -->|抓取 Metrics| C
-    F -->|資料來源| G[Grafana: 可視化儀表板]
-    B -->|健康檢查| F
+    A[用戶] -->|瀏覽/點擊| B[Laravel App: API 網關]
+    B -->|個性化推薦| C[FastAPI: 推薦引擎]
+    B -->|A/B 測試分組| C
+    B -->|行為追蹤| D[MySQL: 用戶與商品資料]
+    B -->|商品管理| D
+    C -->|模型訓練| D
+    C -->|快取推薦| E[Redis: 行為與模型快取]
+    F[Prometheus: 監控與告警] -->|系統與推薦指標| C
+    F -->|健康檢查| B
+    F -->|可視化| G[Grafana: 儀表板]
 ```
 
 - **Laravel App**：處理 API 路由、A/B 測試分組、商品與用戶資料管理。
