@@ -32,19 +32,15 @@
 以下是架構圖，清晰展示 FastAPI 推薦結果回傳 Laravel，並最終回傳前端的流程：
 
 ```mermaid
-graph TD
-    A[用戶前端] -->|訪問 /api/user/recommendations| B[Laravel: API 網關]
-    B -->|REST 請求推薦| C[FastAPI: 推薦引擎]
+graph LR
+    A[用戶前端] -->|請求 /api/user/recommendations| B[Laravel: API 網關]
+    B -->|獲取推薦| C[FastAPI: 推薦引擎]
     C -->|回傳推薦 ID| B
     B -->|過濾後回傳| A
-    B -->|A/B 分組| C
-    B -->|行為紀錄| D[MySQL: 用戶/商品/事件]
-    B -->|上下架過濾| D
-    C -->|模型訓練| D
-    C -->|快取模型/行為| E[Redis: 快取/隊列]
-    F[Prometheus: 監控] -->|品質指標| C
+    B -->|行為記錄| D[MySQL: 資料儲存]
+    C -->|快取模型| E[Redis: 快取]
+    F[Prometheus: 監控] -->|指標收集| C
     F -->|健康檢查| B
-    F -->|儀表板| G[Grafana: 可視化]
 ```
 
 - **Laravel**：API 網關，負責 `/api/user/recommendations` 路由，整合 A/B 分組、行為紀錄與上下架過濾，回傳前端。
