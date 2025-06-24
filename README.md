@@ -1,6 +1,6 @@
 # 推薦系統專案
 
-這是一個技術導向的推薦系統專案，採用跨語言微服務架構，結合 Laravel 和 FastAPI，透過 Docker 環境實現個性化商品推薦、A/B 測試、商品上下架管理與即時監控。以下說明專案的功能、架構、核心實現與擴充性。文件更新時間：2025 年 6 月 24 日下午 5:40 (CST)。
+這是一個技術導向的推薦系統專案，採用跨語言微服務架構，結合 Laravel 和 FastAPI，透過 Docker 環境實現個性化商品推薦、A/B 測試、商品上下架管理與即時監控。以下說明專案的功能、架構、核心實現與擴充性。文件更新時間：2025 年 6 月 24 日下午 5:45 (CST)。
 
 ## 專案概述
 **功能**：
@@ -160,19 +160,24 @@ recommendation-system/
 ```php
 public function handle(Request $request, Closure $next)
 {
-    $userId = Auth::id();
+    // 獲取當前用戶 ID，若無登入則使用 0
+    $userId = Auth::id() ?? 0;
+
+    // 設定預設實驗名稱與配置
     $experimentName = 'default_recommendation_experiment';
     $experimentConfig = config('ab_test.experiments.' . $experimentName);
 
+    // 若實驗未啟用，返回預設分組
     if (!isset($experimentConfig['enabled']) || !$experimentConfig['enabled']) {
         $assignedGroup = $experimentConfig['default_group'] ?? 'control';
     } else {
+        // 處理訪客用戶，使用 session ID 進行加權隨機分組
         if (!$userId) {
             $guestId = session()->getId();
             $assignedGroup = $this->assignGroupWithWeight($guestId, $experimentConfig['groups'], config('ab_test.salt'));
             session(['recommendation_group' => $assignedGroup]);
-            $userId = 0;
         } else {
+            // 處理已登入用戶，使用 Thompson Sampling 動態分配
             $user = Auth::user();
             $assignedGroup = $user->recommendation_group ?: $this->assignGroupWithThompsonSampling($userId, $experimentName, $experimentConfig['groups']);
             $user->recommendation_group = $assignedGroup;
@@ -180,12 +185,13 @@ public function handle(Request $request, Closure $next)
         }
     }
 
+    // 將分組與用戶 ID 儲存至請求屬性，供後續使用
     $request->attributes->set('recommendation_group', $assignedGroup);
     $request->attributes->set('current_user_id', $userId);
     return $next($request);
 }
 ```
-**解析**：動態分配 A/B 分組，支援 Thompson Sampling（已登入用戶）與加權隨機（訪客）。
+**解析**：實現 A/B 測試分組，支援訪客與已登入用戶的不同策略，確保分組一致性並記錄。
 
 ### 2. Laravel 推薦服務
 檔案：`laravel-app/app/Services/RecommendationService.php`
@@ -193,17 +199,22 @@ public function handle(Request $request, Closure $next)
 public function getRecommendations(int $userId, string $strategyVersion = 'v1'): array
 {
     try {
+        // 向 FastAPI 發送推薦請求，傳遞用戶 ID 與策略版本
         $response = $this->httpClient->get("/recommend/$userId", [
             'query' => ['strategy_version' => $strategyVersion]
         ]);
+
+        // 解析 FastAPI 回傳的 JSON，提取推薦商品 ID
         $data = json_decode($response->getBody()->getContents(), true);
         $recommendedProductIds = $data['recommended_product_ids'] ?? [];
 
+        // 從 MySQL 查詢上架商品，過濾推薦結果
         $recommendations = Product::whereIn('id', $recommendedProductIds)
                                  ->active()
                                  ->get(['id', 'name', 'price', 'category_id', 'image_url'])
                                  ->toArray();
 
+        // 按推薦順序重新排序商品
         $orderedRecommendations = [];
         foreach ($recommendedProductIds as $id) {
             foreach ($recommendations as $product) {
@@ -216,31 +227,37 @@ public function getRecommendations(int $userId, string $strategyVersion = 'v1'):
 
         return $orderedRecommendations;
     } catch (RequestException $e) {
+        // 若 FastAPI 失敗，回退至隨機推薦上架商品
         Log::error("Failed to get recommendations: " . $e->getMessage());
         return Product::active()->inRandomOrder()->limit(10)->get()->toArray();
     }
 }
 ```
-**解析**：從 FastAPI 獲取推薦 ID，過濾上架商品，回傳前端。
+**解析**：從 FastAPI 獲取推薦 ID，進行二次過濾並回傳前端，包含容錯機制。
 
 ### 3. FastAPI 推薦邏輯
 檔案：`ai-recommender-service/recommender.py`
 ```python
 def get_recommendations(self, user_id: int, strategy_version: str = 'v1', num_recommendations: int = 10) -> list[int]:
+    # 獲取用戶最近觀看商品
     viewed_products = self._get_user_recent_views(user_id)
+    # 獲取所有活躍商品 ID
     all_active_product_ids = list(self.products.keys())
 
+    # 若無活躍商品，返回空列表
     if not all_active_product_ids:
         return []
 
     generated_recommendations = []
 
     if strategy_version == 'v1':
+        # 若有觀看記錄且模型已訓練，進行協同過濾
         if viewed_products and not self.item_similarity_df.empty:
             available_viewed_products = [p for p in viewed_products if p in self.item_similarity_df.columns and p in self.products and self.products[p]['status'] == 'active']
             if available_viewed_products:
                 seen_products_df = self.item_similarity_df[available_viewed_products]
                 sum_similarities = seen_products_df.sum(axis=1)
+                # 排除已觀看商品，排序相似度
                 candidate_recommendations = sum_similarities.drop(viewed_products, errors='ignore').sort_values(ascending=False).index.tolist()
                 
                 for pid in candidate_recommendations:
@@ -249,6 +266,7 @@ def get_recommendations(self, user_id: int, strategy_version: str = 'v1', num_re
                         if len(generated_recommendations) >= num_recommendations:
                             break
         
+        # 若不足數量，隨機補充活躍商品
         if len(generated_recommendations) < num_recommendations:
             remaining_active_products = [p for p in all_active_product_ids if p not in generated_recommendations and p not in viewed_products]
             random.shuffle(remaining_active_products)
@@ -256,23 +274,26 @@ def get_recommendations(self, user_id: int, strategy_version: str = 'v1', num_re
 
     return generated_recommendations[:num_recommendations]
 ```
-**解析**：協同過濾生成推薦，回傳 Laravel。
+**解析**：實現協同過濾推薦，處理冷啟動並確保返回指定數量商品。
 
 ### 4. 商品模型
 檔案：`laravel-app/app/Models/Product.php`
 ```php
 class Product extends Model
 {
+    // 定義可批量賦值的字段
     protected $fillable = ['name', 'description', 'price', 'category_id', 'image_url', 'status'];
+    // 將 price 字段轉為小數格式，保留兩位
     protected $casts = ['price' => 'decimal:2'];
 
+    // 定義活躍商品查詢範圍
     public function scopeActive($query)
     {
         return $query->where('status', 'active');
     }
 }
 ```
-**解析**：管理商品狀態，過濾上架商品。
+**解析**：定義商品模型結構與活躍狀態過濾邏輯。
 
 ## 監控與告警
 - **Prometheus**：監控冷啟動、重複率、多樣性、覆蓋率、熵值（`prometheus/alert.rules.yml`）。
@@ -304,11 +325,11 @@ class Product extends Model
 - **Docker Compose**：統一環境管理，簡化多服務部署與網路配置。
 
 **Q1.2：為什麼分離 FastAPI 作為獨立服務？**
-**答**：分離 FastAPI 的主要考量包括：
-- **技術優勢**：Python 的 AI/ML 生態（如 scikit-learn、NumPy）遠超 PHP，適合實現協同過濾與模型訓練。
-- **職責分離**：Laravel 專注 API 整合與業務邏輯，FastAPI 專注推薦推論，降低耦合度，提升維護性。
-- **擴展性**：FastAPI 可獨立水平擴展（如增加實例處理高負載），無需影響 Laravel。
-- **性能優化**：FastAPI 的異步特性比 PHP 更適合長時間計算任務。
+**答**：分離 FastAPI 的主要考量包括技術優勢、職責分離與擴展性：
+- Python 的 AI/ML 生態（如 scikit-learn、NumPy）遠超 PHP，適合實現協同過濾與模型訓練。
+- Laravel 專注 API 整合與業務邏輯，FastAPI 專注推薦推論，降低耦合度，提升維護性。
+- FastAPI 可獨立水平擴展（如增加實例處理高負載），無需影響 Laravel。
+- 性能優化：FastAPI 的異步特性比 PHP 更適合長時間計算任務。
 
 **Q1.3：如何確保上下架商品一致性？**
 **答**：採用雙層過濾機制：
