@@ -1,0 +1,29 @@
+groups:
+- name: recommendation_alerts
+  rules:
+  - alert: HighColdStartRatio
+    expr: sum by (strategy_version) (rate(recommendation_cold_start_total[5m])) / sum by (strategy_version) (rate(http_requests_total{endpoint="/recommend/{user_id}"}[5m])) > 0.3
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "推薦服務冷啟動比例過高 ({{ $labels.strategy_version }})"
+      description: "最近5分鐘內，推薦策略 '{{ $labels.strategy_version }}' 的冷啟動請求佔比達到 {{ $value | humanizePercentage }}，可能表示用戶行為數據不足或新用戶激增。"
+
+  - alert: HighRecommendationRepetitionRatio
+    expr: recommendation_repetition_ratio{endpoint="/recommend/{user_id}"} > 0.8
+    for: 10m
+    labels:
+      severity: critical
+    annotations:
+      summary: "推薦服務重複率異常高 ({{ $labels.strategy_version }})"
+      description: "推薦策略 '{{ $labels.strategy_version }}' 的產品重複率高於 80%，可能導致用戶體驗不佳。"
+
+  - alert: LowCatalogCoverage
+    expr: recommendation_catalog_coverage_ratio{endpoint="/recommend/{user_id}"} < 0.1
+    for: 2h
+    labels:
+      severity: warning
+    annotations:
+      summary: "推薦服務商品覆蓋率過低 ({{ $labels.strategy_version }})"
+      description: "推薦策略 '{{ $labels.strategy_version }}' 推薦的商品種類過於集中，僅覆蓋了商品總數的 {{ $value | humanizePercentage }}。"
