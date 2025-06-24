@@ -4,37 +4,39 @@
 
 ## 專案概述
 **功能**：
-- **個性化推薦**：透過 Laravel 的 `/api/user/recommendations` 路由，從 FastAPI 獲取推薦結果，過濾上架商品後回傳前端。
+- **個性化推薦**：透過 Laravel 的 `/api/user/recommendations` 路由，向 FastAPI 請求推薦結果，過濾上架商品後回傳給前端。
 - **A/B 測試**：動態分組（Thompson Sampling）比較推薦策略，提升點擊率與轉化率。
 - **商品管理**：管理商品資訊與上下架狀態，確保推薦符合業務需求。
 - **行為追蹤**：記錄用戶曝光與點擊行為，支援模型訓練與效果分析。
 - **即時監控**：監控系統性能（延遲、錯誤率）與推薦品質（冷啟動比例、重複率、多樣性、覆蓋率、熵值）。
 
 **技術亮點**：
-- **微服務解耦**：Laravel 處理 API 網關與業務邏輯，FastAPI 專注推薦推論與模型訓練。
+- **微服務解耦**：Laravel 作為 API 網關整合推薦流程，FastAPI 專注模型推論與訓練。
 - **高效快取**：Redis 儲存模型、行為與推薦結果，支援重複率計算與隊列。
 - **自動化訓練**：APScheduler 每 6 小時更新模型，確保推薦即時性。
 - **可觀測性**：Prometheus 與 Grafana 提供全面指標監控與告警。
 
 **目的**：
 - 提供精準的個性化推薦，優化用戶體驗與業務指標。
-- 透過 A/B 測試持續改進推薦策略，支援 Retail Media Network、內容推薦等場景。
+- 透過 A/B 測試持續改進推薦策略，支援 Retail Media Network 等場景。
 - 確保系統穩定性與高可維護性，快速響應問題。
 
 **核心流程**：
-1. 用戶訪問 `/api/user/recommendations`，Laravel 進行 A/B 分組與認證。
-2. Laravel 請求 FastAPI，傳遞用戶 ID 與策略版本。
-3. FastAPI 使用協同過濾生成推薦（僅上架商品），回傳商品 ID。
-4. Laravel 透過 `Product::active()` 二次過濾，回傳前端。
+1. 用戶前端訪問 `/api/user/recommendations`，Laravel 進行 A/B 分組與認證。
+2. Laravel 透過 REST 請求向 FastAPI 傳遞用戶 ID 與策略版本。
+3. FastAPI 使用協同過濾生成推薦（僅上架商品），回傳商品 ID 給 Laravel。
+4. Laravel 透過 `Product::active()` 二次過濾，回傳處理後的結果給前端。
 5. 用戶行為記錄至 MySQL，供 FastAPI 訓練與監控分析。
 
 ## 系統架構
-以下是架構圖，展示模組互動與功能：
+以下是架構圖，清晰展示 FastAPI 推薦結果回傳 Laravel，並最終回傳前端的流程：
 
 ```mermaid
 graph TD
     A[用戶前端] -->|訪問 /api/user/recommendations| B[Laravel: API 網關]
     B -->|REST 請求推薦| C[FastAPI: 推薦引擎]
+    C -->|回傳推薦 ID| B
+    B -->|過濾後回傳| A
     B -->|A/B 分組| C
     B -->|行為紀錄| D[MySQL: 用戶/商品/事件]
     B -->|上下架過濾| D
@@ -45,8 +47,8 @@ graph TD
     F -->|儀表板| G[Grafana: 可視化]
 ```
 
-- **Laravel**：API 網關，負責 `/api/user/recommendations`、A/B 分組、行為紀錄與上下架過濾。
-- **FastAPI**：推薦引擎，執行協同過濾與模型訓練，定時同步商品資料。
+- **Laravel**：API 網關，負責 `/api/user/recommendations` 路由，整合 A/B 分組、行為紀錄與上下架過濾，回傳前端。
+- **FastAPI**：推薦引擎，執行協同過濾與模型訓練，定時同步商品資料，回傳推薦 ID 給 Laravel。
 - **MySQL**：儲存用戶、商品（含 `status`）與行為事件（`recommendation_events`）。
 - **Redis**：快取模型、行為與推薦結果，支援重複率計算與隊列。
 - **Prometheus & Grafana**：監控系統與推薦品質，提供告警與可視化。
@@ -223,7 +225,7 @@ public function getRecommendations(int $userId, string $strategyVersion = 'v1'):
     }
 }
 ```
-**解析**：整合 FastAPI 推薦，二次過濾上架商品，提供備用隨機策略。
+**解析**：從 FastAPI 獲取推薦 ID，過濾上架商品，回傳前端。
 
 ### 3. FastAPI 推薦邏輯
 檔案：`ai-recommender-service/recommender.py`
@@ -258,7 +260,7 @@ def get_recommendations(self, user_id: int, strategy_version: str = 'v1', num_re
 
     return generated_recommendations[:num_recommendations]
 ```
-**解析**：協同過濾生成推薦，支援冷啟動與多策略。
+**解析**：協同過濾生成推薦，回傳 Laravel。
 
 ### 4. 商品模型
 檔案：`laravel-app/app/Models/Product.php`
@@ -297,10 +299,10 @@ class Product extends Model
 ## 問與答
 ### 1. 架構與設計
 **Q1.1：整體架構與技術選型？**
-**答**：微服務架構，Laravel 處理 API 與業務，FastAPI 負責推薦推論。選型原因：Laravel 生態成熟，FastAPI 高效且支援 AI 生態，Redis 提速，Prometheus/Grafana 增強監控。
+**答**：微服務架構，Laravel 整合 API，FastAPI 負責推薦。選型原因：Laravel 生態成熟，FastAPI 支援 AI，Redis 提速，Prometheus 監控。
 
 **Q1.2：為何分離 FastAPI？**
-**答**：Python 的 AI 生態優於 PHP，FastAPI 異步高效，解耦提升維護性。
+**答**：Python AI 生態優於 PHP，FastAPI 異步高效，解耦提升維護性。
 
 ### 2. Laravel
 **Q2.1：商品上下架管理？**
@@ -314,7 +316,7 @@ class Product extends Model
 **答**：協同過濾，APScheduler 每 6 小時訓練，模型快取至 Redis。
 
 **Q3.2：冷啟動？**
-**答**：FastAPI 隨機補充活躍商品，Laravel 提供備用隨機策略。
+**答**：FastAPI 隨機補充活躍商品，Laravel 提供備用策略。
 
 ### 4. 資料庫與快取
 **Q4.1：Redis 角色？**
@@ -358,8 +360,8 @@ class Product extends Model
 - 初始數據可透過 `ProductSeeder` 填充。
 
 ## 未來擴充
-- **向量化推薦**：引入嵌入模型（BERT、Word2Vec）提升精準度。
-- **深度模型**：使用 DNN/GNN 捕捉複雜行為模式。
+- **向量化推薦**：引入嵌入模型提升精準度。
+- **深度模型**：使用 DNN/GNN 捕捉複雜行為。
 - **實時推薦**：整合 Kafka/Flink 處理流式數據。
 - **場景應用**：支援 Retail Media Network、SaaS 行銷平台。
 
