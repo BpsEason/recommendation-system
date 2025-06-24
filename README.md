@@ -1,6 +1,6 @@
 # 推薦系統專案
 
-這是一個技術導向的推薦系統專案，採用跨語言微服務架構，結合 Laravel 和 FastAPI，透過 Docker 環境實現個性化商品推薦、A/B 測試、商品上下架管理與即時監控。以下說明專案的功能、架構、核心實現與擴充性。文件更新時間：2025 年 6 月 24 日下午 5:38 (CST)。
+這是一個技術導向的推薦系統專案，採用跨語言微服務架構，結合 Laravel 和 FastAPI，透過 Docker 環境實現個性化商品推薦、A/B 測試、商品上下架管理與即時監控。以下說明專案的功能、架構、核心實現與擴充性。文件更新時間：2025 年 6 月 24 日下午 5:40 (CST)。
 
 ## 專案概述
 **功能**：
@@ -294,61 +294,156 @@ class Product extends Model
 
 ## 問與答
 ### 1. 架構與設計
-**Q1.1：整體架構與技術選型？**
-**答**：微服務架構，Laravel 整合 API，FastAPI 負責推薦。選型原因：Laravel 生態成熟，FastAPI 支援 AI，Redis 提速，Prometheus 監控。
+**Q1.1：整體架構與技術選型原因？**
+**答**：本專案採用微服務架構，將 Laravel 作為 API 網關處理請求與業務邏輯，FastAPI 負責推薦推論與模型訓練。技術選型原因如下：
+- **Laravel (PHP)**：生態成熟，適合快速構建 Web API、A/B 測試分組與行為追蹤，與 MySQL 整合無縫。
+- **FastAPI (Python)**：異步框架，結合 scikit-learn 和 Pandas，擅長 AI 模型訓練與推論，處理計算密集任務效率高。
+- **MySQL**：穩定性高，支援 ACID 事務，適合儲存結構化數據（如用戶、商品、行為事件）。
+- **Redis**：記憶體資料庫，提供低延遲快取與隊列功能，加速模型存取與行為記錄。
+- **Prometheus & Grafana**：開源監控工具，支援自定義指標與可視化，適合實時監控與告警。
+- **Docker Compose**：統一環境管理，簡化多服務部署與網路配置。
 
-**Q1.2：為何分離 FastAPI？**
-**答**：Python AI 生態優於 PHP，FastAPI 異步高效，解耦提升維護性。
+**Q1.2：為什麼分離 FastAPI 作為獨立服務？**
+**答**：分離 FastAPI 的主要考量包括：
+- **技術優勢**：Python 的 AI/ML 生態（如 scikit-learn、NumPy）遠超 PHP，適合實現協同過濾與模型訓練。
+- **職責分離**：Laravel 專注 API 整合與業務邏輯，FastAPI 專注推薦推論，降低耦合度，提升維護性。
+- **擴展性**：FastAPI 可獨立水平擴展（如增加實例處理高負載），無需影響 Laravel。
+- **性能優化**：FastAPI 的異步特性比 PHP 更適合長時間計算任務。
 
-### 2. Laravel
-**Q2.1：商品上下架管理？**
-**答**：`products` 表含 `status`，`Product::active()` 過濾，`RecommendationService` 二次校驗。
+**Q1.3：如何確保上下架商品一致性？**
+**答**：採用雙層過濾機制：
+- FastAPI 內部只載入 `status = 'active'` 的商品數據（`self.products`）。
+- Laravel 的 `RecommendationService` 使用 `Product::active()` 二次驗證，確保最終回傳的商品均為上架狀態。
 
-**Q2.2：行為追蹤？**
-**答**：`RecommendationInteraction` 事件，異步寫入 MySQL，供 FastAPI 訓練。
+### 2. Laravel 部分
+**Q2.1：A/B 測試如何實現與動態分配？**
+**答**：A/B 測試由 `AssignRecommendationGroup` 中間件實現，流程如下：
+- **分組邏輯**：根據 `config/ab_test.experiments` 設定，支援多實驗（如 `default_recommendation_experiment`）。
+- **已登入用戶**：使用 Thompson Sampling 基於歷史數據動態分配分組（`control` 或 `model_v2`），並儲存至 `users` 表的 `recommendation_group` 欄位。
+- **訪客用戶**：使用 session ID 與加鹽哈希（`ab_test.salt`）進行加權隨機分組，確保一致性。
+- **配置管理**：`config/ab_test.php` 可啟用/禁用實驗，並設定權重與預設分組。
 
-### 3. FastAPI
-**Q3.1：模型訓練？**
-**答**：協同過濾，APScheduler 每 6 小時訓練，模型快取至 Redis。
+**Q2.2：行為追蹤的實現細節與優化？**
+**答**：
+- **事件定義**：`RecommendationInteraction` 事件記錄「曝光」（impression）與「點擊」（click），包含 `user_id`、`product_id`、`group`、`action` 等字段。
+- **異步處理**：`LogRecommendationInteraction` 監聽器實現 `ShouldQueue`，將事件推送到 Redis 隊列，異步寫入 `recommendation_events` 表，減少 API 延遲。
+- **優化點**：隊列使用 Redis 確保高吞吐量，可根據負載調整工作者數量（`php artisan queue:work`）。
 
-**Q3.2：冷啟動？**
-**答**：FastAPI 隨機補充活躍商品，Laravel 提供備用策略。
+**Q2.3：商品上下架管理的具體實現？**
+**答**：使用 Eloquent ORM 管理：
+- `products` 表包含 `status` 欄位（`active`、`inactive`、`sold_out`）。
+- `Product` 模型定義 `scopeActive()` 方法，`RecommendationService` 透過 `Product::whereIn('id', $ids)->active()` 過濾。
+- 上下架狀態由後台管理（如 `php artisan db:seed` 或管理介面），確保實時更新。
+
+### 3. FastAPI 部分
+**Q3.1：推薦模型的訓練流程與定時更新？**
+**答**：
+- **模型類型**：基於物品的協同過濾，使用 `scikit-learn` 的 `cosine_similarity` 計算商品相似度，生成 `item_similarity_df`。
+- **數據來源**：從 MySQL 的 `recommendation_events` 表提取用戶互動數據（點擊、購買），轉為用戶-商品矩陣。
+- **訓練流程**：`APScheduler` 每 6 小時執行 `train_and_save_model`，從 MySQL 拉取最新數據，訓練模型並序列化儲存至 `model/item_similarity_model.pkl`，同時快取至 Redis。
+- **熱更新**：新模型直接替換 `self.item_similarity_df`，無需重啟服務。
+
+**Q3.2：如何處理冷啟動用戶？**
+**答**：
+- **識別**：若 `user_id` 無互動數據（例如新用戶或 ID 為 0），視為冷啟動。
+- **策略**：`get_recommendations` 優先使用協同過濾，若無數據，隨機從活躍商品中補充。
+- **備用方案**：Laravel 的 `RecommendationService` 在 FastAPI 失敗時，回退至 `Product::active()->inRandomOrder()->limit(10)`。
+- **改進潛力**：可加入熱門商品推薦或基於用戶屬性（年齡、地區）的內容推薦。
+
+**Q3.3：推薦結果的多樣性如何保證？**
+**答**：目前使用協同過濾，基於相似度排序。為提升多樣性，可：
+- 在 `get_recommendations` 中加入隨機補充（`remaining_active_products`）。
+- 未來引入多臂老虎機（Multi-Armed Bandit）或最大邊界相關性（MMR）算法。
 
 ### 4. 資料庫與快取
-**Q4.1：Redis 角色？**
-**答**：快取模型、行為、隊列，計算重複率，降低 MySQL 負載。
+**Q4.1：Redis 在系統中的具體角色？**
+**答**：
+- **模型快取**：儲存 `item_similarity_model.pkl` 的序列化數據，加速 FastAPI 啟動與推論。
+- **行為快取**：記錄用戶最近推薦結果（`last_recommendations:{user_id}`），用於計算重複率。
+- **隊列支持**：處理 Laravel 的 `RecommendationInteraction` 事件，確保異步寫入 MySQL。
+- **優勢**：相比 MySQL，Redis 提供低延遲讀寫，適合高頻訪問場景。
 
-### 5. 監控
-**Q5.1：監控指標？**
-**答**：系統（請求量、延遲），業務（冷啟動、重複率、多樣性、覆蓋率、熵值）。
+**Q4.2：MySQL 與 Redis 的數據同步機制？**
+**答**：
+- **MySQL**：作為主要數據庫，儲存結構化數據（如 `users`、`products`、`recommendation_events`），由 Laravel 與 FastAPI 讀取。
+- **Redis**：作為快取層，數據由 FastAPI 定期從 MySQL 同步（訓練時更新 `self.products`），Laravel 透過隊列更新行為數據。
+- **一致性**：FastAPI 訓練後將模型快取至 Redis，Laravel 依賴 MySQL 作為最終數據來源，確保一致性。
 
-**Q5.2：重複率與覆蓋率？**
-**答**：Redis 計算交集（重複率）與推薦商品比例（覆蓋率），影響新鮮感與長尾銷售。
+### 5. 監控與可觀測性
+**Q5.1：監控的具體指標與實現方式？**
+**答**：
+- **系統指標**：請求延遲（`http_request_duration_seconds`）、錯誤率（`http_requests_total{status=5xx}`），由 Prometheus 從 FastAPI 和 Laravel 收集。
+- **業務指標**：
+  - 冷啟動比例：無互動用戶推薦比例。
+  - 重複率：連續推薦中相同商品比例（Redis 計算交集）。
+  - 多樣性：推薦列表的類別熵值（`category_entropy`）。
+  - 覆蓋率：推薦商品佔所有活躍商品的比例。
+- **實現**：FastAPI 暴露 `/metrics` 端點，Prometheus 每 15 秒抓取，Grafana 提供儀表板。
+
+**Q5.2：如何設置告警規則？**
+**答**：在 `prometheus/alert.rules.yml` 中定義：
+- 冷啟動比例 > 30% 持續 5 分鐘，觸發 Email/Slack 通知。
+- 重複率 > 80% 持續 10 分鐘，觸發告警。
+- 請求延遲 > 500ms 持續 1 分鐘，通知運維。
+
+**Q5.3：如何分析推薦效果？**
+**答**：使用 Grafana 儀表板視覺化 CTR（點擊率）、轉化率與曝光量，結合 SQL 查詢 `recommendation_events` 表分析 A/B 測試結果。
 
 ### 6. A/B 測試
-**Q6.1：實現方式？**
-**答**：`AssignRecommendationGroup` 中間件，Thompson Sampling 或加權隨機分組。
+**Q6.1：A/B 測試的具體實現細節？**
+**答**：
+- **分組算法**：`AssignRecommendationGroup` 使用 Thompson Sampling 基於貝葉斯概率優化分組，動態調整 `control` 和 `model_v2` 的流量。
+- **實驗管理**：`config/ab_test.php` 定義實驗名稱、權重與預設分組，支援動態啟用/禁用。
+- **數據記錄**：每個請求的 `recommendation_group` 記錄至 `users` 表或 session，供後續分析。
 
-**Q6.2：效果評估？**
-**答**：CTR、轉化率、曝光量，透過 SQL 或 Grafana 分析。
+**Q6.2：如何評估 A/B 測試效果？**
+**答**：
+- **指標**：CTR（點擊/曝光）、轉化率（購買/點擊）、曝光量。
+- **分析方法**：使用 SQL 聚合查詢（`SELECT group, COUNT(*) FROM recommendation_events GROUP BY group`）或 Grafana 面板。
+- **統計驗證**：採用 t 檢驗或卡方檢驗，確保結果顯著性（p < 0.05）。
 
-### 7. 優化
-**Q7.1：模型自動化？**
-**答**：增量訓練、版本管理、離線評估、特徵工程、分布式訓練。
+### 7. 優化與改進
+**Q7.1：如何實現模型的自動化與增量訓練？**
+**答**：
+- **自動化**：APScheduler 每 6 小時觸發全量訓練，未來可改進為增量訓練（僅更新新數據）。
+- **版本管理**：儲存多個模型版本（`model/item_similarity_model_vX.pkl`），支援回滾。
+- **離線評估**：使用歷史數據計算 RMSE 或 Precision@K，驗證模型效果。
+- **分布式訓練**：結合 Dask 或 Spark，處理大規模數據。
 
-**Q7.2：告警設置？**
-**答**：冷啟動 > 30% 或重複率 > 80% 觸發 Email/Slack 通知。
+**Q7.2：如何提升推薦的多樣性與新鮮感？**
+**答**：
+- **多樣性**：引入 MMR 算法或類別限制，確保推薦涵蓋多個類別。
+- **新鮮感**：增加時間衰減因子（衰減舊互動權重）或加入熱門商品推薦。
+- **A/B 測試**：測試多樣性策略的影響，優化用戶留存率。
 
 ### 8. 故障排除
-**Q8.1：FastAPI 故障？**
-**答**：檢查容器、監控、健康檢查、日誌、依賴服務與模型檔案。
+**Q8.1：FastAPI 服務故障的排查步驟？**
+**答**：
+1. 檢查容器狀態：`docker compose ps`，確認 `fastapi-recommender` 運行。
+2. 測試健康檢查：`curl http://localhost:8001/health`。
+3. 查看日誌：`docker compose logs fastapi-recommender`，檢查錯誤（如模型載入失敗）。
+4. 驗證依賴：確認 MySQL 和 Redis 可連通。
+5. 重啟服務：`docker compose restart fastapi-recommender`。
 
-### 9. 行為問題
-**Q9.1：開發挑戰？**
-**答**：上下架一致性，透過雙層過濾解決。
+**Q8.2：推薦結果異常（如全為隨機商品）？**
+**答**：
+- 檢查 FastAPI 日誌，確認 `item_similarity_df` 是否訓練成功。
+- 驗證 MySQL 的 `recommendation_events` 表是否有足夠數據。
+- 執行 `docker compose exec fastapi-recommender python main.py` 測試模型。
 
-**Q9.2：改進方向？**
-**答**：DNN/GNN、實時推薦（Kafka/Flink）、多樣性、可解釋性、MLOps。
+### 9. 未來改進與應用
+**Q9.1：面對大規模數據的挑戰？**
+**答**：
+- **分布式訓練**：使用 Spark 或 Ray 處理大規模用戶行為數據。
+- **實時推薦**：整合 Kafka 與 Flink，支援流式數據處理。
+- **快取優化**：採用 Memcached 或 Redis Cluster，提升高並發場景性能。
+
+**Q9.2：如何支援更複雜的推薦場景？**
+**答**：
+- **深度學習**：引入 DNN 或 GNN，捕捉用戶行為的非線性模式（需 TensorFlow/PyTorch 支援）。
+- **上下文推薦**：新增 `context` 參數（如時間、位置），結合 Bert 模型生成上下文嵌入。
+- **可解釋性**：添加推薦理由（例如「因您喜歡類似商品」），提升用戶信任。
+- **應用場景**：支援 Retail Media Network（廣告推薦）、內容平台（文章推薦）、SaaS 行銷（個性化推送）。
 
 ## 注意事項
 - 確保 `.env` 設定正確。
@@ -356,7 +451,9 @@ class Product extends Model
 - 初始數據可透過 `ProductSeeder` 填充。
 
 ## 未來擴充
-- **向量化推薦**：引入嵌入模型提升精準度。
+- **向量化推薦**：引入嵌入模型（如 Sentence-BERT）提升精準度。
 - **深度模型**：使用 DNN/GNN 捕捉複雜行為。
 - **實時推薦**：整合 Kafka/Flink 處理流式數據。
 - **場景應用**：支援 Retail Media Network、SaaS 行銷平台。
+
+有問題請查看日誌或聯繫，謝謝！
