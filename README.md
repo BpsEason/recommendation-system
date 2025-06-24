@@ -1,6 +1,6 @@
 # 推薦系統專案
 
-這是一個技術導向的推薦系統專案，採用跨語言微服務架構，結合 Laravel 和 FastAPI，透過 Docker 環境實現個性化商品推薦、A/B 測試、商品上下架管理與即時監控。以下說明專案的功能、架構、核心實現與擴充性。
+這是一個技術導向的推薦系統專案，採用跨語言微服務架構，結合 Laravel 和 FastAPI，透過 Docker 環境實現個性化商品推薦、A/B 測試、商品上下架管理與即時監控。以下說明專案的功能、架構、核心實現與擴充性。文件更新時間：2025 年 6 月 24 日下午 5:38 (CST)。
 
 ## 專案概述
 **功能**：
@@ -22,9 +22,9 @@
 - 確保系統穩定性與高可維護性，快速響應問題。
 
 **核心流程**：
-1. 用戶前端訪問 `/api/user/recommendations`，Laravel 進行 A/B 分組與認證。
+1. 用戶前端訪問 `/api/user/recommendations`，Laravel 進行 A/B 分組。
 2. Laravel 透過 REST 請求向 FastAPI 傳遞用戶 ID 與策略版本。
-3. FastAPI 使用協同過濾生成推薦（僅上架商品），回傳商品 ID 給 Laravel。
+3. FastAPI 基於協同過濾生成推薦（僅上架商品），回傳商品 ID 給 Laravel。
 4. Laravel 透過 `Product::active()` 二次過濾，回傳處理後的結果給前端。
 5. 用戶行為記錄至 MySQL，供 FastAPI 訓練與監控分析。
 
@@ -43,11 +43,11 @@ graph LR
     F -->|健康檢查| B
 ```
 
-- **Laravel**：API 網關，負責 `/api/user/recommendations` 路由，整合 A/B 分組、行為紀錄與上下架過濾，回傳前端。
-- **FastAPI**：推薦引擎，執行協同過濾與模型訓練，定時同步商品資料，回傳推薦 ID 給 Laravel。
+- **Laravel**：處理 `/api/user/recommendations` 請求，負責 A/B 分組、行為記錄與上下架過濾，回傳前端。
+- **FastAPI**：生成推薦結果，回傳給 Laravel，定時更新模型。
 - **MySQL**：儲存用戶、商品（含 `status`）與行為事件（`recommendation_events`）。
-- **Redis**：快取模型、行為與推薦結果，支援重複率計算與隊列。
-- **Prometheus & Grafana**：監控系統與推薦品質，提供告警與可視化。
+- **Redis**：快取模型與行為，支援效能與重複率計算。
+- **Prometheus**：監控推薦品質與系統狀態。
 - **Docker Compose**：統一容器管理，確保環境一致。
 
 ## 環境需求
@@ -360,5 +360,3 @@ class Product extends Model
 - **深度模型**：使用 DNN/GNN 捕捉複雜行為。
 - **實時推薦**：整合 Kafka/Flink 處理流式數據。
 - **場景應用**：支援 Retail Media Network、SaaS 行銷平台。
-
-有問題請查看日誌或聯繫，謝謝！
